@@ -59,6 +59,58 @@ dfc-customer-sync/
 └── SKILL.md                  # 本文档
 ```
 
+## 安装
+
+### 一键安装（推荐）
+
+```bash
+# 方式 1: 使用安装脚本（自动选择镜像）
+curl -sL https://raw.githubusercontent.com/damienchen0624-spec/dfc-customer-sync/main/install.sh | bash
+
+# 方式 2: 手动下载（使用镜像）
+curl -L "https://mirror.ghproxy.com/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip && \
+unzip -q /tmp/dfc-sync.zip -d ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/ && \
+rm /tmp/dfc-sync.zip && \
+echo "✅ 安装完成"
+```
+
+### 备选镜像
+
+如果上述镜像不可用，尝试：
+
+```bash
+# 镜像 1: github.moeyy.xyz
+curl -L "https://github.moeyy.xyz/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip
+
+# 镜像 2: gh-proxy.com
+curl -L "https://gh-proxy.com/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip
+
+# 直接下载（需要能访问 GitHub）
+curl -L "https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip
+```
+
+下载后解压：
+
+```bash
+unzip -q /tmp/dfc-sync.zip -d ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/
+rm /tmp/dfc-sync.zip
+```
+
+### 手动安装
+
+```bash
+# 1. 下载 Release
+# 访问 https://github.com/damienchen0624-spec/dfc-customer-sync/releases
+# 下载 dfc-customer-sync-v3.6.0.zip
+
+# 2. 解压到技能目录
+unzip dfc-customer-sync-v3.6.0.zip -d ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/
+
+# 3. 复制配置文件
+cd ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/dfc-customer-sync
+cp config/config.example.json config/config.json
+```
+
 ## 首次使用
 
 ### 快速开始
