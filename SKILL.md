@@ -61,17 +61,40 @@ dfc-customer-sync/
 
 ## 安装
 
-### 一键安装（推荐）
+### 方式 1: PyPI 安装（推荐）
 
 ```bash
-# 方式 1: 使用安装脚本（自动选择镜像）
+# 国内用户使用清华镜像
+pip install dfc-customer-sync -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 或者使用阿里云镜像
+pip install dfc-customer-sync -i https://mirrors.aliyun.com/pypi/simple/
+
+# 国外用户直接安装
+pip install dfc-customer-sync
+```
+
+安装后使用：
+```bash
+# 方式 1: 命令行工具
+dfc-sync --setup
+dfc-sync
+
+# 方式 2: Python 模块
+python -m dfc_customer_sync --setup
+python -m dfc_customer_sync
+```
+
+### 方式 2: GitHub Release 安装
+
+```bash
+# 使用安装脚本（自动选择镜像）
 curl -sL https://raw.githubusercontent.com/damienchen0624-spec/dfc-customer-sync/main/install.sh | bash
 
-# 方式 2: 手动下载（使用镜像）
+# 或手动下载
 curl -L "https://mirror.ghproxy.com/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip && \
 unzip -q /tmp/dfc-sync.zip -d ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/ && \
-rm /tmp/dfc-sync.zip && \
-echo "✅ 安装完成"
+rm /tmp/dfc-sync.zip
 ```
 
 ### 备选镜像
