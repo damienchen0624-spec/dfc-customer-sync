@@ -352,14 +352,10 @@ class DfcClient:
 
         try:
             result = _http_post(SAVE_CUSTOMER_URL, payload, self.token)
-            if result.get("code") == "200" and result.get("success"):
-                resp_data = result.get("data", {})
-                customer_id = resp_data.get("customerId") or resp_data.get("id") or resp_data.get("recordId", "")
-                return {"ok": True, "customer_id": customer_id}
-            else:
-                error_msg = result.get("msg", "未知错误")
-                error_kind = "auth" if result.get("code") == "10001" else "api"
-                return {"ok": False, "error": {"message": error_msg, "kind": error_kind}}
+            # _http_post 已经在 code != "200" 时抛出异常，成功返回即表示请求成功
+            resp_data = result.get("data", {})
+            customer_id = resp_data.get("customerId") or resp_data.get("id") or resp_data.get("recordId", "")
+            return {"ok": True, "customer_id": customer_id}
         except DfcApiError as e:
             return {"ok": False, "error": e.to_dict()}
 

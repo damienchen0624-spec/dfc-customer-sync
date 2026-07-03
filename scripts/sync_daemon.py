@@ -12,21 +12,24 @@
   - 巨懂车：浏览器 Cookie（Playwright 持久化登录态）
   - 大风车读写操作：APP_KEY → Token（不再需要浏览器）
 
-v3.0 重构：
-  - 大风车 CRM 操作统一到 dfc_client.DfcClient
-  - 读操作（查重）和写操作（新增）均使用 APP_KEY Token
-  - 字段构建与 dfc-create-customer 技能完全对齐
+v3.6 优化：
+  - P0: 浏览器崩溃自动恢复 + 防止多实例运行（PID 锁）
+  - P1: 浏览器健康检查 + 登录态过期醒目提示
+  - P2: 日志轮转（5MB × 7 份）+ 错误分类（可恢复/不可恢复）
 """
 
 import argparse
 import json
+import logging
 import os
+import signal
 import subprocess
 import sys
 import time
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import auth
 import dfc_client
@@ -36,10 +39,107 @@ import state as state_mod
 import platform_utils
 
 
+# ============================================================
+# 日志（P2: 日志轮转）
+# ============================================================
+def setup_logging(log_file_path: Path) -> logging.Logger:
+    """配置日志：控制台 + 轮转文件（5MB × 7 份）。"""
+    logger = logging.getLogger("dfc_sync")
+    logger.setLevel(logging.INFO)
+    # 避免重复添加 handler
+    if logger.handlers:
+        return logger
+
+    fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    # 轮转文件 handler: 5MB per file, keep 7 backups
+    log_file_path = Path(log_file_path).expanduser()
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        str(log_file_path), maxBytes=5 * 1024 * 1024,
+        backupCount=7, encoding="utf-8",
+    )
+    file_handler.setFormatter(fmt)
+
+    # 控制台 handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(fmt)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    return logger
+
+
+# ============================================================
+# PID 锁（P0: 防止多实例运行）
+# ============================================================
+class PidLock:
+    """进程锁：确保只有一个守护进程实例运行。"""
+
+    def __init__(self, pid_file: Path):
+        self.pid_file = Path(pid_file).expanduser()
+        self.pid_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def is_running(self) -> Optional[int]:
+        """检查是否有其他实例在运行。返回运行中的 PID，或 None。"""
+        if not self.pid_file.exists():
+            return None
+        try:
+            pid = int(self.pid_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            return None
+        if pid == os.getpid():
+            return None  # 是自己
+        # 检查进程是否存活
+        try:
+            os.kill(pid, 0)
+            return pid  # 进程存活
+        except OSError:
+            return None  # 进程已死，PID 文件是残留的
+
+    def acquire(self) -> bool:
+        """获取锁。使用 O_CREAT|O_EXCL 原子操作避免竞态条件。
+        
+        成功返回 True，已有实例运行返回 False。
+        """
+        running_pid = self.is_running()
+        if running_pid is not None:
+            return False
+        # 原子创建：O_CREAT|O_EXCL 保证只有一个进程能成功创建
+        try:
+            fd = os.open(str(self.pid_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            os.close(fd)
+            return True
+        except FileExistsError:
+            # 竞态：另一个进程刚好创建了文件，再检查一次
+            running_pid = self.is_running()
+            if running_pid is not None:
+                return False
+            # 死进程残留，清理后重试一次
+            try:
+                self.pid_file.unlink()
+                fd = os.open(str(self.pid_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                os.write(fd, str(os.getpid()).encode("utf-8"))
+                os.close(fd)
+                return True
+            except (FileExistsError, OSError):
+                return False
+
+    def release(self):
+        """释放锁。"""
+        try:
+            self.pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+# ============================================================
+# 配置加载
+# ============================================================
 def load_config(path: Path) -> dict:
     """加载配置文件，自动替换 <APP_DATA> 占位符为跨平台的应用数据目录。"""
     config_text = Path(path).expanduser().read_text(encoding="utf-8")
-    # 替换 <APP_DATA> 占位符为跨平台的应用数据目录
     app_data = str(platform_utils.get_app_data_dir())
     config_text = config_text.replace("<APP_DATA>", app_data)
     return json.loads(config_text)
@@ -49,25 +149,128 @@ def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def log(msg: str, log_file: Path = None):
-    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-    print(line)
-    if log_file:
-        log_file = Path(log_file).expanduser()
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+def _pid_file_path(config) -> Path:
+    """PID 文件路径，和 state_file 同目录。"""
+    state_file = Path(config["state_file"]).expanduser()
+    return state_file.parent / "daemon.pid"
 
 
-def process_leads(leads, client: dfc_client.DfcClient, state, follower_mapping: Dict = None) -> dict:
-    """处理一批新客户：去重 → 写入 → 更新状态。返回计数。
+def _storage_state_path(config) -> str:
+    """storage_state 文件路径，和 state_file 同目录。"""
+    state_file = Path(config["state_file"]).expanduser()
+    return str(state_file.parent / "jvdc_state.json")
 
-    Args:
-        leads: 巨懂车抓取的客户列表
-        client: DfcClient（APP_KEY token，读写操作均使用）
-        state: 同步状态
-        follower_mapping: 跟进人到销售的映射表
+
+# ============================================================
+# 浏览器工具
+# ============================================================
+def _is_browser_alive(page) -> bool:
+    """检查浏览器页面是否存活（P1: 健康检查）。"""
+    try:
+        page.evaluate("1")
+        return True
+    except Exception:
+        return False
+
+
+def _is_browser_crash_error(e: Exception) -> bool:
+    """判断异常是否为浏览器崩溃类错误（P2: 错误分类）。"""
+    msg = str(e).lower()
+    crash_keywords = [
+        "has been closed",
+        "target page, context or browser",
+        "browser has been closed",
+        "context has been closed",
+        "page has been closed",
+        "connection closed",
+        "broken pipe",
+    ]
+    return any(kw in msg for kw in crash_keywords)
+
+
+def _is_recoverable_error(e: Exception) -> bool:
+    """判断异常是否可恢复（P2: 错误分类）。
+    
+    可恢复：浏览器崩溃、网络超时、页面加载失败
+    不可恢复：APP_KEY 无效、配置错误
     """
+    if _is_browser_crash_error(e):
+        return True
+    msg = str(e).lower()
+    recoverable_keywords = [
+        "timeout", "timed out", "net::", "network",
+        "err_connection", "err_name", "loading",
+    ]
+    return any(kw in msg for kw in recoverable_keywords)
+
+
+def _navigate_reliable(page, url: str, timeout_ms: int = 30000, max_retries: int = 3):
+    """可靠导航：networkidle + 空白页检测 + 自动重试。"""
+    for attempt in range(1, max_retries + 1):
+        try:
+            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+        except Exception:
+            pass
+        try:
+            body_len = page.evaluate("document.body ? document.body.innerText.length : 0")
+        except Exception:
+            body_len = 0
+        if body_len > 50:
+            return
+        print(f"⚠️ 页面加载不完整（第{attempt}次），重试...")
+        time.sleep(2)
+    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+
+
+def _start_chrome_cdp(user_data_dir: str, port: int = 9222, timeout_sec: int = 30):
+    """启动 Chrome 并开启 CDP 调试端口，返回 (进程, CDP URL)。"""
+    import urllib.request
+
+    os.makedirs(user_data_dir, exist_ok=True)
+    platform_utils.kill_process_on_port(port)
+    time.sleep(1)
+
+    chrome_binary = platform_utils.find_chrome_binary()
+    if not chrome_binary:
+        raise RuntimeError("未找到 Chrome 浏览器，请先运行: playwright install chromium")
+
+    print(f"启动 Chrome: {chrome_binary}")
+
+    args = [
+        chrome_binary,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data_dir}",
+        "--window-position=200,100",
+        "--window-size=1280,800",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    if platform_utils.get_os_type() == "macos":
+        args.append("--password-store=basic")
+    if platform_utils.get_os_type() == "windows":
+        args.append("--disable-gpu-sandbox")
+    subprocess.Popen(args)
+
+    cdp_url = f"http://127.0.0.1:{port}"
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        time.sleep(0.5)
+        try:
+            resp = urllib.request.urlopen(f"{cdp_url}/json/version", timeout=2)
+            data = json.loads(resp.read())
+            print(f"✅ Chrome CDP 就绪: {data.get('Browser', '?')}")
+            return None, cdp_url
+        except Exception:
+            continue
+
+    raise RuntimeError(f"Chrome CDP 端口 {port} 未就绪（{timeout_sec}秒超时）")
+
+
+# ============================================================
+# 业务逻辑
+# ============================================================
+def process_leads(leads, client: dfc_client.DfcClient, state, follower_mapping: Dict = None) -> dict:
+    """处理一批新客户：去重 → 写入 → 更新状态。返回计数。"""
     synced = skipped = failed = 0
     failed_times = []
     for lead in leads:
@@ -75,8 +278,6 @@ def process_leads(leads, client: dfc_client.DfcClient, state, follower_mapping: 
         if state_mod.is_synced(state, phone):
             skipped += 1
             continue
-        # 直接写入（不去重大风车）
-        # 用户要求：懂车帝有新留资全量写入，不管大风车内是否重复
         result = client.add_customer(lead, follower_mapping=follower_mapping)
         if result["ok"]:
             state["synced_phones"].add(phone)
@@ -89,8 +290,6 @@ def process_leads(leads, client: dfc_client.DfcClient, state, follower_mapping: 
                 )
             failed += 1
             failed_times.append(lead.get("leave_time", ""))
-    # 推进水位线：若有失败，停在最早失败记录的时间（保证失败的下轮重试）；
-    # 否则推进到本批最新。配合 filter_new_leads 的 >= 比较，失败记录不会被漏掉。
     if leads:
         if failed_times:
             state["last_sync_time"] = min(failed_times)
@@ -99,119 +298,81 @@ def process_leads(leads, client: dfc_client.DfcClient, state, follower_mapping: 
     return {"synced": synced, "skipped": skipped, "failed": failed}
 
 
-def _storage_state_path(config) -> str:
-    """storage_state 文件路径，和 state_file 同目录。"""
-    state_file = Path(config["state_file"]).expanduser()
-    return str(state_file.parent / "jvdc_state.json")
-
-
-def _navigate_reliable(page, url: str, timeout_ms: int = 30000, max_retries: int = 3):
-    """可靠导航：networkidle + 空白页检测 + 自动重试。"""
-    for attempt in range(1, max_retries + 1):
-        try:
-            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-        except Exception:
-            # networkidle 超时也接受（SPA 可能持续有请求）
-            pass
-        # 检查是否空白页：body 文本过短视为未加载
-        try:
-            body_len = page.evaluate("document.body ? document.body.innerText.length : 0")
-        except Exception:
-            body_len = 0
-        if body_len > 50:
-            return  # 页面已正常加载
-        log(f"⚠️ 页面加载不完整（第{attempt}次），重试...")
-        time.sleep(2)
-    # 最后一次不强求 networkidle
-    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-
-
-def _start_chrome_cdp(user_data_dir: str, port: int = 9222, timeout_sec: int = 30):
-    """启动 Chrome 并开启 CDP 调试端口，返回 (进程, CDP URL)。"""
-    import urllib.request
-
+# ============================================================
+# 浏览器启动（提取为独立函数，供恢复时重用）
+# ============================================================
+def _launch_browser(p, config, logger):
+    """启动浏览器并返回 (page, ctx, cleanup_fn)。
+    
+    根据 config 中的 headless 设置选择启动方式。
+    cleanup_fn 用于清理资源（仅非 headless 模式需要手动关闭 Chrome）。
+    """
+    user_data_dir = str(Path(config["browser"]["user_data_dir"]).expanduser())
+    headless = config["browser"]["headless"]
+    storage_path = _storage_state_path(config)
     os.makedirs(user_data_dir, exist_ok=True)
 
-    # 清理端口上的旧进程（跨平台）
-    platform_utils.kill_process_on_port(port)
-    time.sleep(1)
+    def _load_cookies(ctx):
+        if Path(storage_path).exists():
+            try:
+                storage_data = json.loads(Path(storage_path).read_text(encoding="utf-8"))
+                if "cookies" in storage_data:
+                    ctx.add_cookies(storage_data["cookies"])
+                    logger.info(f"✅ 已加载 {len(storage_data['cookies'])} 个 cookies")
+            except Exception as e:
+                logger.warning(f"⚠️ 加载 storage_state 失败: {e}")
 
-    # 查找 Chrome 二进制文件（跨平台）
-    chrome_binary = platform_utils.find_chrome_binary()
-    if not chrome_binary:
-        raise RuntimeError("未找到 Chrome 浏览器，请先运行: playwright install chromium")
-
-    log(f"启动 Chrome: {chrome_binary}")
-
-    args = [
-        chrome_binary,
-        f"--remote-debugging-port={port}",
-        f"--user-data-dir={user_data_dir}",
-        "--window-position=200,100",
-        "--window-size=1280,800",
-        "--no-first-run",
-        "--no-default-browser-check",
-    ]
-    # macOS 需要额外参数：不使用 Keychain，避免每次启动弹窗要求输入系统密码
-    if platform_utils.get_os_type() == "macos":
-        args.append("--password-store=basic")
-    # Windows 需要额外的参数
-    if platform_utils.get_os_type() == "windows":
-        args.append("--disable-gpu-sandbox")
-    subprocess.Popen(args)
-
-    # 等待 CDP 就绪
-    cdp_url = f"http://127.0.0.1:{port}"
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        time.sleep(0.5)
-        try:
-            resp = urllib.request.urlopen(f"{cdp_url}/json/version", timeout=2)
-            data = json.loads(resp.read())
-            log(f"✅ Chrome CDP 就绪: {data.get('Browser', '?')}")
-            return None, cdp_url
-        except Exception:
-            continue
-
-    raise RuntimeError(f"Chrome CDP 端口 {port} 未就绪（{timeout_sec}秒超时）")
+    if headless:
+        args = ["--disable-blink-features=AutomationControlled"]
+        if platform_utils.get_os_type() == "macos":
+            args.append("--password-store=basic")
+        ctx = p.chromium.launch_persistent_context(
+            user_data_dir, headless=True, args=args,
+        )
+        _load_cookies(ctx)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        return page, ctx, lambda: None
+    else:
+        _, cdp_url = _start_chrome_cdp(user_data_dir)
+        logger.info(f"Chrome 已启动 (CDP: {cdp_url})")
+        browser = p.chromium.connect_over_cdp(cdp_url)
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        _load_cookies(ctx)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        return page, ctx, lambda: logger.info("Chrome 需手动关闭（二进制直接启动的）")
 
 
+# ============================================================
+# Setup
+# ============================================================
 def run_setup(config):
     """首次登录巨懂车。"""
-    # === 第零步：检查依赖 ===
     print("=== 巨懂车客户同步 setup ===\n")
     print("0. 检查依赖...")
-    
-    # 检查 playwright
+
     try:
         import playwright
         print("   ✅ playwright 已安装")
     except ImportError:
         print("   ❌ 缺少 playwright，请运行: pip install playwright")
         return
-    
-    # 检查 chromium
+
     chrome_binary = platform_utils.find_chrome_binary()
     if chrome_binary:
         print(f"   ✅ Chromium 已安装: {chrome_binary}")
     else:
         print("   ❌ 缺少 Chromium，请运行: playwright install chromium")
         return
-    
+
     from playwright.sync_api import sync_playwright
 
-    # === 第一步：自动检测并验证 APP_KEY ===
     print("\n1. 检测大风车 APP_KEY...")
-    
-    # 从环境变量获取 APP_KEY（与所有 dfc 技能统一）
     app_key = os.environ.get("APP_KEY")
     if not app_key:
         print("   ❌ 未找到环境变量 APP_KEY")
         return
-    
     print(f"   ✅ 找到 APP_KEY: {app_key[:8]}...{app_key[-4:]}")
-    
-    # 验证 APP_KEY 是否有效
+
     print("\n2. 验证 APP_KEY...")
     try:
         token = auth.get_token()
@@ -222,38 +383,26 @@ def run_setup(config):
         print(f"   ❌ APP_KEY 验证失败: {e}")
         print("   💡 请检查 APP_KEY 是否正确")
         return
-    
+
     print("\n✅ APP_KEY 自检通过！\n")
-    
-    # === 第二步：打开浏览器让用户登录 ===
     print("3. 打开浏览器，请登录巨懂车平台...")
-    
+
     user_data_dir = str(Path(config["browser"]["user_data_dir"]).expanduser())
     storage_path = _storage_state_path(config)
-    
-    # 确保目录存在
     os.makedirs(user_data_dir, exist_ok=True)
-    
     print(f"📁 浏览器 Profile 目录: {user_data_dir}")
 
     with sync_playwright() as p:
-        # 不使用 --no-sandbox，确保 profile 正确加载
         args = [
             "--window-position=200,100",
             "--window-size=1280,800",
             "--disable-blink-features=AutomationControlled",
         ]
-        # macOS 特殊处理：避免 Keychain 弹窗
         if platform_utils.get_os_type() == "macos":
             args.append("--password-store=basic")
-        
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir,
-            headless=False,
-            args=args,
-        )
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
 
+        ctx = p.chromium.launch_persistent_context(user_data_dir, headless=False, args=args)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
         _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=60000)
         print(f"\n🌐 登录页已加载: {page.url}")
         print("👉 请在浏览器中完成登录操作")
@@ -281,55 +430,92 @@ def run_setup(config):
                 try:
                     body_len = page.evaluate("document.body ? document.body.innerText.length : 0")
                     if body_len < 50:
-                        log("⚠️ 登录页空白，重新加载...")
+                        print("⚠️ 登录页空白，重新加载...")
                         _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=30000)
                 except Exception:
                     pass
-
         print("\n❌ 登录超时（5分钟），请重试")
 
 
+# ============================================================
+# Daemon（P0: 浏览器崩溃自动恢复 + 多实例防护）
+# ============================================================
+class _BrowserRestartNeeded(Exception):
+    """内部信号：浏览器需要重启。"""
+    pass
+
+
 def run_daemon(config):
-    """守护进程主循环。"""
+    """守护进程主入口（含多实例防护 + 崩溃自动恢复）。"""
     from playwright.sync_api import sync_playwright
 
-    # 前置检查
     print("=== 启动巨懂车客户同步 ===\n")
-    
-    # 检查 APP_KEY
+
+    # ---- P0: 多实例防护 ----
+    pid_lock = PidLock(_pid_file_path(config))
+    running_pid = pid_lock.is_running()
+    if running_pid is not None:
+        print(f"❌ 已有守护进程在运行 (PID: {running_pid})")
+        print(f"💡 如需重启，请先停止旧进程: kill {running_pid}")
+        return
+    if not pid_lock.acquire():
+        print("❌ 无法获取进程锁")
+        return
+    print(f"✅ 进程锁已获取 (PID: {os.getpid()})")
+
+    # ---- 注册退出清理（占位，logger 创建后重新注册） ----
+    _logger_ref = [None]  # 用 list 持有引用，让闭包能访问
+
+    def _cleanup(signum=None, frame=None):
+        if signum and _logger_ref[0]:
+            _logger_ref[0].info("收到退出信号，守护进程停止")
+        pid_lock.release()
+        if _logger_ref[0]:
+            _logger_ref[0].info("=== 守护进程已退出 ===")
+        if signum:
+            sys.exit(0)
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
+
+    # ---- 前置检查 ----
     app_key = os.environ.get("APP_KEY")
     if not app_key:
         print("❌ 未找到环境变量 APP_KEY，无法启动")
+        pid_lock.release()
         return
     print(f"✅ APP_KEY: {app_key[:8]}...{app_key[-4:]}")
-    
-    # 检查浏览器 profile（是否已 setup）
+
     user_data_dir = str(Path(config["browser"]["user_data_dir"]).expanduser())
     if not Path(user_data_dir).exists():
         print(f"❌ 浏览器数据目录不存在: {user_data_dir}")
         print("💡 请先运行: python scripts/sync_daemon.py --setup")
+        pid_lock.release()
         return
     print(f"✅ 浏览器 Profile: {user_data_dir}")
-    
-    # 验证 APP_KEY 并获取门店信息
+
     try:
         token = auth.get_token()
         account = auth.get_account_info(token)
         print(f"✅ 门店: {account['shopName']} ({account['shopCode']})")
     except Exception as e:
         print(f"❌ APP_KEY 验证失败: {e}")
+        pid_lock.release()
         return
-    
+
     print()
-    
+
+    # ---- P2: 日志轮转 ----
+    logger = setup_logging(config["log_file"])
+    _logger_ref[0] = logger  # 让 signal handler 能访问
+    logger.info(f"=== 守护进程启动 (PID: {os.getpid()}) ===")
+    logger.info(f"大风车门店: {account['shopName']} ({account['shopCode']})")
+
     state_file = Path(config["state_file"]).expanduser()
-    log_file = Path(config["log_file"]).expanduser()
     state = state_mod.load_state(state_file)
 
     owner_id = config.get("dfc", {}).get("owner_id", "")
     owner_name = config.get("dfc", {}).get("owner_name", "")
 
-    # 统一客户端（读写均使用 APP_KEY Token）
     client = dfc_client.DfcClient(
         token=token,
         shop_code=account["shopCode"],
@@ -337,102 +523,105 @@ def run_daemon(config):
         owner_id=owner_id,
         owner_name=owner_name,
     )
-    log(f"大风车门店: {account['shopName']} ({account['shopCode']})", log_file)
-    log("✅ 大风车 Token 客户端已就绪（读写均使用 APP_KEY）", log_file)
+    logger.info("✅ 大风车 Token 客户端已就绪（读写均使用 APP_KEY）")
 
-    # 首次启动记录同步起点
     if not state["last_sync_time"]:
         state["last_sync_time"] = now_str()
         state_mod.save_state(state_file, state)
-        log(f"首次启动，从 {state['last_sync_time']} 起同步新留资", log_file)
+        logger.info(f"首次启动，从 {state['last_sync_time']} 起同步新留资")
 
     interval = config["sync"]["interval_minutes"] * 60
     allowed_types = config["sync"]["lead_type_filter"]
-
-    headless = config["browser"]["headless"]
     storage_path = _storage_state_path(config)
-    
-    # 确保目录存在
-    os.makedirs(user_data_dir, exist_ok=True)
-    
-    log(f"📁 浏览器 Profile 目录: {user_data_dir}", log_file)
 
-    # 启动巨懂车浏览器（用于抓取客户列表）
-    with sync_playwright() as p:
-        try:
-            if headless:
-                # 构建启动参数
-                args = ["--disable-blink-features=AutomationControlled"]
-                if platform_utils.get_os_type() == "macos":
-                    args.append("--password-store=basic")
-                
-                ctx = p.chromium.launch_persistent_context(
-                    user_data_dir, headless=False,
-                    args=args
-                )
-                if Path(storage_path).exists():
-                    try:
-                        storage_data = json.loads(Path(storage_path).read_text(encoding="utf-8"))
-                        if "cookies" in storage_data:
-                            ctx.add_cookies(storage_data["cookies"])
-                            log(f"✅ 已加载 {len(storage_data['cookies'])} 个 cookies", log_file)
-                    except Exception as e:
-                        log(f"⚠️ 加载 storage_state 失败: {e}", log_file)
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                _daemon_loop(page, client, state, state_file, log_file, config, interval, allowed_types, storage_path)
-            else:
-                _, cdp_url = _start_chrome_cdp(user_data_dir)
-                log(f"Chrome 已启动 (CDP: {cdp_url})", log_file)
-                try:
-                    browser = p.chromium.connect_over_cdp(cdp_url)
-                    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-                    if Path(storage_path).exists():
-                        try:
-                            storage_data = json.loads(Path(storage_path).read_text(encoding="utf-8"))
-                            if "cookies" in storage_data:
-                                ctx.add_cookies(storage_data["cookies"])
-                                log(f"✅ 已加载 {len(storage_data['cookies'])} 个 cookies", log_file)
-                        except Exception as e:
-                            log(f"⚠️ 加载 storage_state 失败: {e}", log_file)
-                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                    _daemon_loop(page, client, state, state_file, log_file, config, interval, allowed_types, storage_path)
-                finally:
-                    log("Chrome 需手动关闭（二进制直接启动的）", log_file)
-        finally:
-            pass
+    # ---- P0: 浏览器崩溃自动恢复（外层循环） ----
+    recovery_count = 0
+    max_recoveries = 10  # 连续崩溃上限，超过则退出避免死循环
 
-
-def _daemon_loop(page, client: dfc_client.DfcClient, state, state_file, log_file, config, interval, allowed_types, storage_path=None):
-    """守护进程核心循环。"""
-    # 获取跟进人映射表
-    follower_mapping = config.get("dfc", {}).get("follower_mapping", {})
-    
     while True:
+        try:
+            with sync_playwright() as p:
+                page, ctx, cleanup = _launch_browser(p, config, logger)
+                recovery_count = 0  # 成功启动后重置计数
+                try:
+                    _daemon_loop(page, client, state, state_file, logger,
+                                 config, interval, allowed_types, storage_path)
+                finally:
+                    try:
+                        cleanup()
+                    except Exception:
+                        pass
+        except _BrowserRestartNeeded as e:
+            recovery_count += 1
+            if recovery_count > max_recoveries:
+                logger.error(f"❌ 浏览器连续崩溃 {max_recoveries} 次，退出守护进程")
+                logger.error("💡 请检查浏览器环境，运行 --setup 重新登录")
+                break
+            wait_sec = min(5 * recovery_count, 30)  # 递增等待：5s, 10s, 15s... 最多30s
+            logger.warning(f"⚠️ 浏览器崩溃: {e}")
+            logger.warning(f"🔄 第 {recovery_count} 次恢复，{wait_sec}秒后重启浏览器...")
+            time.sleep(wait_sec)
+        except KeyboardInterrupt:
+            logger.info("收到退出信号，守护进程停止")
+            break
+        except Exception as e:
+            logger.error(f"❌ 不可恢复的错误: {e}")
+            error_handler.log_error_with_reference(e, "守护进程异常")
+            break
+
+    pid_lock.release()
+    logger.info("=== 守护进程已退出 ===")
+
+
+def _daemon_loop(page, client: dfc_client.DfcClient, state, state_file,
+                 logger, config, interval, allowed_types, storage_path=None):
+    """守护进程核心循环（P1: 浏览器健康检查 + 登录态处理）。"""
+    follower_mapping = config.get("dfc", {}).get("follower_mapping", {})
+    consecutive_errors = 0
+
+    while True:
+        # ---- P1: 浏览器健康检查 ----
+        if not _is_browser_alive(page):
+            raise _BrowserRestartNeeded("浏览器页面已关闭（健康检查未通过）")
+
         try:
             # token 可能过期，每轮重取
             token = auth.get_token()
             client.token = token
 
-            log(f"开始抓取巨懂车客户列表 (since={state['last_sync_time']})...", log_file)
+            logger.info(f"开始抓取巨懂车客户列表 (since={state['last_sync_time']})...")
             leads = jvdc_scraper.fetch_new_leads(
                 page, config["jvdc"]["list_url"],
                 since=state["last_sync_time"], allowed_types=allowed_types,
             )
-            log(f"抓取到 {len(leads)} 条新客户记录", log_file)
+            logger.info(f"抓取到 {len(leads)} 条新客户记录")
             result = process_leads(leads, client, state, follower_mapping=follower_mapping)
             state_mod.save_state(state_file, state)
-            log(f"同步完成: 新增{result['synced']} 跳过{result['skipped']} 失败{result['failed']}", log_file)
+            logger.info(f"同步完成: 新增{result['synced']} 跳过{result['skipped']} 失败{result['failed']}")
+            consecutive_errors = 0  # 成功一轮后重置
+
         except jvdc_scraper.BrowserLoginExpired:
+            # ---- P1: 登录态过期处理 ----
+            logger.warning("=" * 50)
+            logger.warning("🔴 巨懂车登录态过期！")
+            logger.warning("🔴 请在浏览器中重新登录巨懂车平台")
+            logger.warning("🔴 如使用 headless 模式，请重新运行: python scripts/sync_daemon.py --setup")
+            logger.warning("=" * 50)
             error_handler.handle_error(
-                "巨懂车登录态过期，请在浏览器中重新登录",
-                context="浏览器抓取时"
+                "浏览器抓取时: 巨懂车登录态过期，请在浏览器中重新登录"
             )
-            log("⚠️ 巨懂车登录态过期，请在浏览器中重新登录...", log_file)
-            _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=30000)
+            # 尝试等待重新登录
+            try:
+                _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=30000)
+            except Exception:
+                pass
             deadline = time.time() + 600
             relogged = False
             while time.time() < deadline:
                 time.sleep(5)
+                # 健康检查
+                if not _is_browser_alive(page):
+                    raise _BrowserRestartNeeded("等待重新登录时浏览器崩溃")
                 try:
                     _navigate_reliable(page, config["jvdc"]["list_url"], timeout_ms=15000)
                 except Exception:
@@ -444,28 +633,40 @@ def _daemon_loop(page, client: dfc_client.DfcClient, state, state_file, log_file
                             ctx.storage_state(path=storage_path)
                         except Exception:
                             pass
-                    log("✅ 检测到已重新登录，继续同步", log_file)
+                    logger.info("✅ 检测到已重新登录，继续同步")
                     relogged = True
                     break
             if not relogged:
-                log("⚠️ 等待登录超时（10分钟），下一轮重试", log_file)
+                logger.warning("⚠️ 等待登录超时（10分钟），下一轮重试")
+
         except dfc_client.DfcApiError as e:
+            # ---- P2: 错误分类（不可恢复） ----
             if e.kind == "auth":
+                logger.error(f"🔴 大风车 Token 过期: {e.message}")
+                logger.error("💡 请检查 APP_KEY 环境变量是否有效")
                 error_handler.handle_error(
-                    f"大风车 Token 过期: {e.message}",
-                    context="API 调用时"
+                    f"API 调用时: 大风车 Token 过期: {e.message}"
                 )
-                log(f"⚠️ 大风车 Token 过期: {e.message}", log_file)
-                log("请检查 APP_KEY 环境变量是否有效", log_file)
             else:
+                logger.error(f"❌ 大风车 API 异常: {e.message}")
                 error_handler.handle_error(
-                    f"大风车 API 异常: {e.message}",
-                    context="API 调用时"
+                    f"API 调用时: 大风车 API 异常: {e.message}"
                 )
-                log(f"❌ 大风车 API 异常: {e.message}", log_file)
+
         except Exception as e:
-            error_handler.log_error_with_reference(e, "同步异常")
-            log(f"❌ 同步异常: {e}", log_file)
+            # ---- P0/P2: 浏览器崩溃检测 + 错误分类 ----
+            if _is_browser_crash_error(e):
+                raise _BrowserRestartNeeded(str(e))
+            if _is_recoverable_error(e):
+                consecutive_errors += 1
+                logger.warning(f"⚠️ 可恢复错误（第{consecutive_errors}次）: {e}")
+                if consecutive_errors >= 5:
+                    raise _BrowserRestartNeeded(f"连续 {consecutive_errors} 次可恢复错误")
+                error_handler.log_error_with_reference(e, "同步异常")
+            else:
+                logger.error(f"❌ 不可恢复错误: {e}")
+                error_handler.log_error_with_reference(e, "同步异常")
+
         time.sleep(interval)
 
 
@@ -489,7 +690,6 @@ def run_check(config):
     """运行前自检：检查巨懂车和大风车的登录态。"""
     print("=== 同步自检 ===\n")
 
-    # 1. 检查 APP_KEY 和大风车 Token
     print("1. 检查大风车 APP_KEY...")
     try:
         token = auth.get_token()
@@ -499,7 +699,6 @@ def run_check(config):
     except Exception as e:
         print(f"   ❌ {e}")
 
-    # 2. 检查巨懂车登录态
     print("\n2. 检查巨懂车浏览器...")
     user_data_dir = str(Path(config["browser"]["user_data_dir"]).expanduser())
     if Path(user_data_dir).exists():
@@ -507,7 +706,6 @@ def run_check(config):
     else:
         print(f"   ❌ 浏览器数据目录不存在，请先运行 --setup")
 
-    # 3. 检查 storage_state
     print("\n3. 检查巨懂车登录态...")
     storage_path = _storage_state_path(config)
     if Path(storage_path).exists():
@@ -520,45 +718,37 @@ def run_check(config):
     else:
         print(f"   ❌ storage_state 不存在，请先运行 --setup")
 
+    # P0: 检查是否有其他实例在运行
+    print("\n4. 检查守护进程...")
+    pid_lock = PidLock(_pid_file_path(config))
+    running_pid = pid_lock.is_running()
+    if running_pid:
+        print(f"   ⚠️ 守护进程正在运行 (PID: {running_pid})")
+    else:
+        print(f"   ✅ 无守护进程在运行")
+
     print()
 
 
 def check_runtime(config, require_app_key: bool = False) -> list:
-    """检查运行时条件，返回问题列表（空列表表示全部通过）。
-    
-    Args:
-        config: 配置字典
-        require_app_key: 是否要求 APP_KEY 环境变量已设置
-    
-    Returns:
-        问题描述列表，空列表表示全部通过
-    """
+    """检查运行时条件，返回问题列表（空列表表示全部通过）。"""
     issues = []
-    
-    # 检查 APP_KEY
     if require_app_key:
         app_key_env = config.get("dfc", {}).get("app_key_env", "APP_KEY")
         if not os.environ.get(app_key_env):
             issues.append(f"缺少环境变量: {app_key_env}")
-    
-    # 检查浏览器数据目录
     user_data_dir = config.get("browser", {}).get("user_data_dir", "")
     if user_data_dir:
         user_data_path = Path(user_data_dir).expanduser()
         if not user_data_path.exists():
             issues.append(f"浏览器数据目录不存在: {user_data_path}")
-    
-    # 检查 Playwright
     try:
         import playwright
     except ImportError:
         issues.append("缺少 playwright 模块，请运行: pip install playwright")
-    
-    # 检查 Chrome 浏览器
     chrome_binary = platform_utils.find_chrome_binary()
     if not chrome_binary:
         issues.append("未找到 Chrome 浏览器，请运行: playwright install chromium")
-    
     return issues
 
 
@@ -576,7 +766,7 @@ def main():
         print(f"❌ 配置文件不存在: {config_path}")
         print(f"💡 请复制模板: cp config/config.example.json config/config.json")
         sys.exit(1)
-    
+
     config = load_config(config_path)
 
     if args.setup:

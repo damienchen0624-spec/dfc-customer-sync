@@ -124,11 +124,14 @@ def fetch_new_leads(page, list_url: str, since: Optional[str], allowed_types: Li
     # ★ 关键步骤：点击所有 EyeInvisible 图标，解密手机号
     _reveal_all_phones(page)
 
+    # 动态查找跟进人列索引（通过表头匹配）
+    follower_col_index = _find_follower_column_index(page)
+
     # 抓取并解析每一行（排除空行）
     row_elements = page.query_selector_all("table tbody tr:not(.arco-table-empty-row)")
     rows = []
     for el in row_elements:
-        row = _parse_row(el)
+        row = _parse_row(el, follower_col_index=follower_col_index)
         if row.get("phone"):
             rows.append(row)
 
@@ -153,17 +156,45 @@ def _reveal_all_phones(page):
         pass
 
 
-def _parse_row(el) -> Dict:
-    """从一行 DOM 提取客户字段。基于实际 DOM 结构解析。"""
+def _find_follower_column_index(page) -> int:
+    """动态查找"当前跟进人"列的索引。
+    
+    尝试通过表头文本匹配查找，找不到则返回默认值 20。
+    """
+    try:
+        # 查找表头行
+        header_row = page.query_selector("table thead tr")
+        if not header_row:
+            return 20
+        
+        headers = header_row.query_selector_all("th")
+        for i, th in enumerate(headers):
+            text = th.inner_text().strip()
+            if "跟进人" in text or "当前跟进" in text:
+                return i
+    except Exception:
+        pass
+    
+    # 默认回退值
+    return 20
+
+
+def _parse_row(el, follower_col_index: int = 20) -> Dict:
+    """从一行 DOM 提取客户字段。
+    
+    Args:
+        el: 行元素
+        follower_col_index: 跟进人列索引（通过 _find_follower_column_index 动态获取）
+    """
     text = el.inner_text() or ""
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # 按列索引提取当前跟进人（列20）
+    # 按列索引提取当前跟进人（动态查找的列索引）
     follower = ""
     try:
         cells = el.query_selector_all("td")
-        if len(cells) > 20:
-            follower = cells[20].inner_text().strip()
+        if len(cells) > follower_col_index:
+            follower = cells[follower_col_index].inner_text().strip()
     except Exception:
         pass
 
