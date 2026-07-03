@@ -1,0 +1,22 @@
+{
+  "jvdc": {
+    "list_url": "https://www.autoengine.com/apps/usedcar-customer/customer/customer-profile-list",
+    "login_url": "https://www.autoengine.com/login"
+  },
+  "browser": {
+    "user_data_dir": "<APP_DATA>/jvdc-browser",
+    "headless": false
+  },
+  "sync": {
+    "interval_minutes": 10,
+    "lead_type_filter": ["表单线索"]
+  },
+  "dfc": {
+    "app_key_env": "APP_KEY",
+    "owner_id": "",
+    "owner_name": ""
+  },
+  "state_file": "<APP_DATA>/jvdc-sync/state.json",
+  "log_file": "<APP_DATA>/jvdc-sync/sync.log",
+  "_comment": "<APP_DATA> 会自动替换为: macOS=~/Library/Application Support/大风车 AI 龙虾, Windows=%APPDATA%/大风车 AI 龙虾, Linux=~/.local/share/大风车 AI 龙虾"
+}
