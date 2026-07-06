@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dfc-customer-sync"
+version = "3.6.1"
+authors = [
+    {name = "damienchen", email = "damienchen0624@gmail.com"}
+]
+description = "巨懂车客户自动同步到大风车 CRM"
+readme = "SKILL.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["crm", "sync", "automotive", "used-car"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "playwright>=1.40.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/damienchen0624-spec/dfc-customer-sync"
+Repository = "https://github.com/damienchen0624-spec/dfc-customer-sync"
+Issues = "https://github.com/damienchen0624-spec/dfc-customer-sync/issues"
+
+[project.scripts]
+dfc-sync = "dfc_customer_sync.sync_daemon:main"
+
+[tool.setuptools.package-dir]
+dfc_customer_sync = "scripts"
