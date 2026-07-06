@@ -244,6 +244,7 @@ def _start_chrome_cdp(user_data_dir: str, port: int = 9222, timeout_sec: int = 3
         "--window-size=1280,800",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
     ]
     if platform_utils.get_os_type() == "macos":
         args.append("--password-store=basic")
@@ -333,13 +334,79 @@ def _launch_browser(p, config, logger):
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         return page, ctx, lambda: None
     else:
-        _, cdp_url = _start_chrome_cdp(user_data_dir)
-        logger.info(f"Chrome 已启动 (CDP: {cdp_url})")
-        browser = p.chromium.connect_over_cdp(cdp_url)
-        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-        _load_cookies(ctx)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        return page, ctx, lambda: logger.info("Chrome 需手动关闭（二进制直接启动的）")
+        try:
+            _, cdp_url = _start_chrome_cdp(user_data_dir)
+            logger.info(f"Chrome 已启动 (CDP: {cdp_url})")
+            browser = p.chromium.connect_over_cdp(cdp_url)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            _load_cookies(ctx)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            return page, ctx, lambda: logger.info("Chrome 需手动关闭（二进制直接启动的）")
+        except RuntimeError as e:
+            if "未就绪" in str(e) or "timeout" in str(e).lower():
+                logger.warning("⚠️ CDP 启动超时，可能是 Keychain 弹窗需要授权")
+                logger.info("🔄 自动尝试通过可见浏览器解锁 Keychain...")
+                return _launch_browser_unlock_keychain(p, user_data_dir, storage_path, logger)
+            raise
+
+
+def _launch_browser_unlock_keychain(p, user_data_dir: str, storage_path: str, logger):
+    """CDP 启动失败后，用 Playwright 可见模式打开浏览器解锁 Keychain。
+    
+    用户看到浏览器窗口后可能需要输入 Keychain 密码。
+    解锁后保存 cookies，然后返回 page/ctx。
+    """
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--window-position=200,100",
+        "--window-size=1280,800",
+    ]
+    if platform_utils.get_os_type() == "macos":
+        args.append("--password-store=basic")
+
+    logger.info("📂 正在打开可见浏览器窗口（如需 Keychain 授权，请在弹窗中输入密码）...")
+
+    ctx = p.chromium.launch_persistent_context(
+        user_data_dir, headless=False, args=args,
+    )
+
+    # 等待用户处理 Keychain 弹窗（给足时间）
+    logger.info("⏳ 等待浏览器就绪（如需 Keychain 授权，请在弹窗中操作）...")
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+    # 尝试做一个简单操作来确认浏览器完全就绪
+    try:
+        page.evaluate("1")
+        logger.info("✅ 浏览器已就绪，Keychain 已解锁")
+    except Exception:
+        # 等待更长时间
+        time.sleep(5)
+        try:
+            page.evaluate("1")
+            logger.info("✅ 浏览器已就绪")
+        except Exception as e:
+            logger.error(f"❌ 浏览器仍未就绪: {e}")
+            ctx.close()
+            raise RuntimeError("Keychain 解锁失败，请手动运行 --setup")
+
+    # 保存 storage_state 以便后续 CDP 启动也能用
+    try:
+        storage_data = ctx.storage_state()
+        Path(storage_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(storage_path).write_text(json.dumps(storage_data, ensure_ascii=False), encoding="utf-8")
+        logger.info(f"✅ 登录态已保存到: {storage_path}")
+    except Exception as e:
+        logger.warning(f"⚠️ 保存 storage_state 失败: {e}")
+
+    # 保持浏览器窗口打开，返回 page/ctx 供同步使用
+    def cleanup():
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        logger.info("Chrome 已关闭")
+
+    return page, ctx, cleanup
 
 
 # ============================================================

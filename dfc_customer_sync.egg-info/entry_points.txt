@@ -1,0 +1,2 @@
+[console_scripts]
+dfc-sync = dfc_customer_sync.sync_daemon:main
