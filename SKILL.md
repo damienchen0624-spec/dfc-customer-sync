@@ -4,7 +4,7 @@ description: >
   巨懂车客户自动同步到大风车。后台守护进程每 10 分钟从巨懂车后台抓取新留资客户,
   手机号去重后写入大风车客户列表。当用户说"同步巨懂车客户"、"巨懂车留资同步大风车"、
   "启动客户同步"时使用。
-version: 3.6.0
+version: 3.6.1
 author: Hermes Agent
 license: MIT
 ---
@@ -92,7 +92,7 @@ python -m dfc_customer_sync
 curl -sL https://raw.githubusercontent.com/damienchen0624-spec/dfc-customer-sync/main/install.sh | bash
 
 # 或手动下载
-curl -L "https://mirror.ghproxy.com/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip && \
+curl -L "https://mirror.ghproxy.com/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.1/dfc-customer-sync-v3.6.1.zip" -o /tmp/dfc-sync.zip && \
 unzip -q /tmp/dfc-sync.zip -d ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/ && \
 rm /tmp/dfc-sync.zip
 ```
@@ -103,13 +103,13 @@ rm /tmp/dfc-sync.zip
 
 ```bash
 # 镜像 1: github.moeyy.xyz
-curl -L "https://github.moeyy.xyz/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip
+curl -L "https://github.moeyy.xyz/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.1/dfc-customer-sync-v3.6.1.zip" -o /tmp/dfc-sync.zip
 
 # 镜像 2: gh-proxy.com
-curl -L "https://gh-proxy.com/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip
+curl -L "https://gh-proxy.com/https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.1/dfc-customer-sync-v3.6.1.zip" -o /tmp/dfc-sync.zip
 
 # 直接下载（需要能访问 GitHub）
-curl -L "https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.0/dfc-customer-sync-v3.6.0.zip" -o /tmp/dfc-sync.zip
+curl -L "https://github.com/damienchen0624-spec/dfc-customer-sync/releases/download/v3.6.1/dfc-customer-sync-v3.6.1.zip" -o /tmp/dfc-sync.zip
 ```
 
 下载后解压：
@@ -124,10 +124,10 @@ rm /tmp/dfc-sync.zip
 ```bash
 # 1. 下载 Release
 # 访问 https://github.com/damienchen0624-spec/dfc-customer-sync/releases
-# 下载 dfc-customer-sync-v3.6.0.zip
+# 下载 dfc-customer-sync-v3.6.1.zip
 
 # 2. 解压到技能目录
-unzip dfc-customer-sync-v3.6.0.zip -d ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/
+unzip dfc-customer-sync-v3.6.1.zip -d ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/
 
 # 3. 复制配置文件
 cd ~/Library/Application\ Support/大风车\ AI\ 龙虾/SKILLs/dfc-customer-sync
@@ -283,7 +283,12 @@ Windows 用户将 `python` 替换为 `python` 或 `py`。
 
 ## 升级说明
 
-### v3.6.0（当前）
+### v3.6.1（当前）
+
+Bug 修复：
+1. **修复 Windows CDP 模式页面空白** — `_start_chrome_cdp()` 启动参数缺少 `--disable-blink-features=AutomationControlled`，导致巨懂车检测到自动化浏览器后返回空白页
+
+### v3.6.0
 
 稳定性优化（P0/P1/P2）：
 1. **P0: 浏览器崩溃自动恢复** — 检测到浏览器崩溃时自动重启，无需手动干预
