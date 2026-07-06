@@ -669,6 +669,29 @@ def _daemon_loop(page, client: dfc_client.DfcClient, state, state_file,
                  logger, config, interval, allowed_types, storage_path=None):
     """守护进程核心循环（P1: 浏览器健康检查 + 登录态处理）。"""
     follower_mapping = config.get("dfc", {}).get("follower_mapping", {})
+    
+    # 如果没有配置 follower_mapping，尝试自动获取
+    if not follower_mapping:
+        logger.info("未配置 follower_mapping，尝试自动获取销售列表...")
+        try:
+            from list_staff import get_staff_list, extract_staff_info
+            token = auth.get_token()
+            records = get_staff_list(token)
+            if records:
+                staff_list = extract_staff_info(records)
+                for staff in staff_list:
+                    name = staff["name"]
+                    if name:
+                        follower_mapping[name] = {
+                            "recordId": staff["recordId"],
+                            "recordDisplay": name
+                        }
+                logger.info(f"✅ 自动获取到 {len(follower_mapping)} 个销售")
+            else:
+                logger.warning("⚠️ 未能获取销售列表，将使用默认销售 (owner_id)")
+        except Exception as e:
+            logger.warning(f"⚠️ 获取销售列表失败: {e}，将使用默认销售 (owner_id)")
+    
     consecutive_errors = 0
 
     while True:
