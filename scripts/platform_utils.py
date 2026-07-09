@@ -52,25 +52,72 @@ def get_playwright_cache_dir() -> Path:
         return Path.home() / ".cache" / "ms-playwright"
 
 
-def find_chrome_binary() -> Optional[str]:
-    """查找 Chrome/Chromium 可执行文件（跨平台）。"""
+def find_system_chrome_binary() -> Optional[str]:
+    """查找系统安装的 Chrome 或 Edge（非 Playwright 版本）。
+    
+    系统浏览器不会被注入 Playwright 自动化特征，
+    适合用于需要绕过网站反自动化检测的场景。
+    优先查找 Chrome，找不到则查找 Edge（Windows 自带）。
+    """
     os_type = get_os_type()
     
-    # 1. 首先查找 Playwright 的 Chrome for Testing
+    if os_type == "macos":
+        # 优先 Chrome
+        system_chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        if Path(system_chrome).exists():
+            return system_chrome
+        # 回退 Edge
+        system_edge = "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+        if Path(system_edge).exists():
+            return system_edge
+    elif os_type == "windows":
+        # 优先 Chrome
+        for env_var in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]:
+            base = os.environ.get(env_var, "")
+            if base:
+                chrome_path = Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"
+                if chrome_path.exists():
+                    return str(chrome_path)
+        # 回退 Edge（Windows 10/11 自带）
+        for env_var in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]:
+            base = os.environ.get(env_var, "")
+            if base:
+                edge_path = Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+                if edge_path.exists():
+                    return str(edge_path)
+    else:
+        # Linux
+        for p in ["/usr/bin/google-chrome", "/usr/bin/microsoft-edge", "/usr/bin/chromium-browser", "/usr/bin/chromium"]:
+            if Path(p).exists():
+                return p
+    
+    return None
+
+
+def find_chrome_binary() -> Optional[str]:
+    """查找 Chrome/Chromium 可执行文件（跨平台）。
+    
+    优先返回系统 Chrome（自动化特征更少），
+    找不到时回退到 Playwright 的 Chromium。
+    """
+    # 1. 优先使用系统 Chrome
+    system = find_system_chrome_binary()
+    if system:
+        return system
+    
+    # 2. 回退到 Playwright 的 Chromium
+    os_type = get_os_type()
     pw_cache = get_playwright_cache_dir()
     if pw_cache.exists():
         if os_type == "macos":
-            # macOS: .../chromium-XXXX/chrome-mac-arm64/Google Chrome for Testing.app/...
             for d in sorted(pw_cache.iterdir(), reverse=True):
                 if not d.name.startswith("chromium-"):
                     continue
-                # 尝试 arm64 和 x64
                 for arch in ["arm64", "x64"]:
                     p = d / f"chrome-mac-{arch}" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
                     if p.exists():
                         return str(p)
         elif os_type == "windows":
-            # Windows: .../chromium-XXXX/chrome-win64/chrome.exe
             for d in sorted(pw_cache.iterdir(), reverse=True):
                 if not d.name.startswith("chromium-"):
                     continue
@@ -81,32 +128,12 @@ def find_chrome_binary() -> Optional[str]:
                 if p.exists():
                     return str(p)
         else:
-            # Linux: .../chromium-XXXX/chrome-linux/chrome
             for d in sorted(pw_cache.iterdir(), reverse=True):
                 if not d.name.startswith("chromium-"):
                     continue
                 p = d / "chrome-linux" / "chrome"
                 if p.exists():
                     return str(p)
-    
-    # 2. 查找系统安装的 Chrome
-    if os_type == "macos":
-        system_chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        if Path(system_chrome).exists():
-            return system_chrome
-    elif os_type == "windows":
-        # 常见的 Chrome 安装路径
-        for env_var in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]:
-            base = os.environ.get(env_var, "")
-            if base:
-                chrome_path = Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"
-                if chrome_path.exists():
-                    return str(chrome_path)
-    else:
-        # Linux
-        for p in ["/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium"]:
-            if Path(p).exists():
-                return p
     
     return None
 

@@ -460,15 +460,39 @@ def run_setup(config):
     print(f"📁 浏览器 Profile 目录: {user_data_dir}")
 
     with sync_playwright() as p:
-        args = [
+        # 使用 CDP 模式启动系统浏览器（避免 Playwright 注入 webdriver 特征）
+        chrome_binary = platform_utils.find_system_chrome_binary()
+        if not chrome_binary:
+            print("   ❌ 找不到 Chrome 或 Edge 浏览器")
+            print("   💡 请安装 Chrome 或使用 Edge（Windows 自带）")
+            return
+        
+        print(f"   🌐 使用浏览器: {chrome_binary}")
+        
+        # 启动系统浏览器（CDP 模式）
+        import subprocess
+        chrome_proc = subprocess.Popen([
+            chrome_binary,
+            f"--remote-debugging-port=9222",
+            f"--user-data-dir={user_data_dir}",
+            "--disable-blink-features=AutomationControlled",
             "--window-position=200,100",
             "--window-size=1280,800",
-            "--disable-blink-features=AutomationControlled",
-        ]
-        if platform_utils.get_os_type() == "macos":
-            args.append("--password-store=basic")
-
-        ctx = p.chromium.launch_persistent_context(user_data_dir, headless=False, args=args)
+        ])
+        
+        # 等待浏览器启动
+        print("   ⏳ 等待浏览器启动...")
+        time.sleep(3)
+        
+        try:
+            # Playwright 通过 CDP 连接
+            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        except Exception as e:
+            print(f"   ❌ 连接浏览器失败: {e}")
+            chrome_proc.terminate()
+            return
+        
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=60000)
         print(f"\n🌐 登录页已加载: {page.url}")
@@ -502,6 +526,7 @@ def run_setup(config):
                 except Exception:
                     pass
         print("\n❌ 登录超时（5分钟），请重试")
+        chrome_proc.terminate()
 
 
 # ============================================================
@@ -644,6 +669,29 @@ def _daemon_loop(page, client: dfc_client.DfcClient, state, state_file,
                  logger, config, interval, allowed_types, storage_path=None):
     """守护进程核心循环（P1: 浏览器健康检查 + 登录态处理）。"""
     follower_mapping = config.get("dfc", {}).get("follower_mapping", {})
+    
+    # 如果没有配置 follower_mapping，尝试自动获取
+    if not follower_mapping:
+        logger.info("未配置 follower_mapping，尝试自动获取销售列表...")
+        try:
+            from list_staff import get_staff_list, extract_staff_info
+            token = auth.get_token()
+            records = get_staff_list(token)
+            if records:
+                staff_list = extract_staff_info(records)
+                for staff in staff_list:
+                    name = staff["name"]
+                    if name:
+                        follower_mapping[name] = {
+                            "recordId": staff["recordId"],
+                            "recordDisplay": name
+                        }
+                logger.info(f"✅ 自动获取到 {len(follower_mapping)} 个销售")
+            else:
+                logger.warning("⚠️ 未能获取销售列表，将使用默认销售 (owner_id)")
+        except Exception as e:
+            logger.warning(f"⚠️ 获取销售列表失败: {e}，将使用默认销售 (owner_id)")
+    
     consecutive_errors = 0
 
     while True:

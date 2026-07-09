@@ -12,6 +12,7 @@ scripts/auth.py
 scripts/dfc_client.py
 scripts/error_handler.py
 scripts/jvdc_scraper.py
+scripts/list_staff.py
 scripts/mapping.py
 scripts/platform_utils.py
 scripts/state.py
