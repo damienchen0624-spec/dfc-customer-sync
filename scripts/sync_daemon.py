@@ -313,25 +313,76 @@ def _launch_browser(p, config, logger):
     storage_path = _storage_state_path(config)
     os.makedirs(user_data_dir, exist_ok=True)
 
-    def _load_cookies(ctx):
-        if Path(storage_path).exists():
-            try:
-                storage_data = json.loads(Path(storage_path).read_text(encoding="utf-8"))
-                if "cookies" in storage_data:
-                    ctx.add_cookies(storage_data["cookies"])
-                    logger.info(f"✅ 已加载 {len(storage_data['cookies'])} 个 cookies")
-            except Exception as e:
-                logger.warning(f"⚠️ 加载 storage_state 失败: {e}")
+    def _restore_storage_state(ctx, page):
+        """完整恢复 storage_state：cookies + localStorage/origins。"""
+        if not Path(storage_path).exists():
+            return
+        try:
+            storage_data = json.loads(Path(storage_path).read_text(encoding="utf-8"))
+            
+            # 1. 恢复 cookies
+            if "cookies" in storage_data:
+                ctx.add_cookies(storage_data["cookies"])
+                logger.info(f"✅ 已加载 {len(storage_data['cookies'])} 个 cookies")
+            
+            # 2. 通过 init_script 在页面加载前设置 localStorage（关键修复）
+            origins = storage_data.get("origins", [])
+            if origins:
+                ls_items = origins[0].get("localStorage", [])
+                if ls_items:
+                    ls_json = json.dumps(ls_items, ensure_ascii=False)
+                    init_script = f"""
+                        (function() {{
+                            try {{
+                                var items = {ls_json};
+                                items.forEach(function(item) {{
+                                    try {{
+                                        localStorage.setItem(item.name, item.value);
+                                    }} catch(e) {{}}
+                                }});
+                                console.log('[Sync] Restored ' + items.length + ' localStorage items');
+                            }} catch(e) {{
+                                console.error('[Sync] localStorage restore failed:', e);
+                            }}
+                        }})();
+                    """
+                    page.add_init_script(init_script)
+                    logger.info(f"✅ 已注入 {len(ls_items)} 个 localStorage 项（页面加载前自动恢复）")
+        except Exception as e:
+            logger.warning(f"⚠️ 恢复 storage_state 失败：{e}")
 
     if headless:
-        args = ["--disable-blink-features=AutomationControlled"]
+        # 覆盖 User-Agent 去掉 HeadlessChrome 痕迹
+        headless_ua = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        )
+        args = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-gpu",
+            f"--user-agent={headless_ua}",
+        ]
         if platform_utils.get_os_type() == "macos":
             args.append("--password-store=basic")
         ctx = p.chromium.launch_persistent_context(
             user_data_dir, headless=True, args=args,
         )
-        _load_cookies(ctx)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        
+        # 反检测：抹除 headless 特征
+        page.add_init_script("""
+            // 覆盖 navigator.webdriver（默认 true → undefined）
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            // 模拟插件数组长度
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            // 模拟语言数组
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+            // 覆盖 chrome 运行时
+            window.chrome = { runtime: {} };
+        """)
+        
+        _restore_storage_state(ctx, page)
         return page, ctx, lambda: None
     else:
         try:
@@ -339,8 +390,8 @@ def _launch_browser(p, config, logger):
             logger.info(f"Chrome 已启动 (CDP: {cdp_url})")
             browser = p.chromium.connect_over_cdp(cdp_url)
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            _load_cookies(ctx)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            _restore_storage_state(ctx, page)
             return page, ctx, lambda: logger.info("Chrome 需手动关闭（二进制直接启动的）")
         except RuntimeError as e:
             if "未就绪" in str(e) or "timeout" in str(e).lower():
