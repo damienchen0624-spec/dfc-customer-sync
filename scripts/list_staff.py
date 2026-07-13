@@ -76,11 +76,6 @@ def get_staff_list(token: str, max_pages: int = 10, logger=None) -> dict:
     return all_staff
 
 
-def extract_staff_info(staff_dict: dict) -> list:
-    """将字典转换为列表格式（兼容旧接口）。"""
-    return list(staff_dict.values())
-
-
 def main():
     print("=== 获取大风车销售列表 ===\n")
     print("（通过用户 API 获取销售信息）\n")
@@ -101,13 +96,13 @@ def main():
         print(f"⚠️ 获取账户信息失败: {e}\n")
     
     # 获取销售列表
-    print("正在从订单数据提取销售列表...")
+    print("正在从用户 API 获取销售列表...")
     staff_dict = get_staff_list(token)
     
     if not staff_dict:
         print("\n❌ 未找到销售列表")
         print("\n💡 可能的原因:")
-        print("   1. 门店没有订单数据")
+        print("   1. 门店没有员工数据")
         print("   2. API 接口变更，请联系技术支持")
         print("\n🔧 替代方案: 手动配置 follower_mapping")
         print("   在 config.json 的 dfc 部分添加:")
@@ -117,8 +112,8 @@ def main():
         print("   }")
         return
     
-    # 提取销售信息
-    staff_list = extract_staff_info(staff_dict)
+    # 转换为列表用于展示
+    staff_list = list(staff_dict.values())
     
     print(f"\n✅ 找到 {len(staff_list)} 个销售:\n")
     print(f"{'序号':<6} {'姓名':<20} {'recordId'}")

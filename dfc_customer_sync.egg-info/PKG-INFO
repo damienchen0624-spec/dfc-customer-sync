@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: dfc-customer-sync
-Version: 3.6.5
+Version: 3.6.6
 Summary: 巨懂车客户自动同步到大风车 CRM
 Author-email: damienchen <damienchen0624@gmail.com>
 License: MIT
@@ -27,7 +27,7 @@ description: >
   巨懂车客户自动同步到大风车。后台守护进程每 10 分钟从巨懂车后台抓取新留资客户,
   手机号去重后写入大风车客户列表。当用户说"同步巨懂车客户"、"巨懂车留资同步大风车"、
   "启动客户同步"时使用。
-version: 3.6.5
+version: 3.6.6
 author: Hermes Agent
 license: MIT
 ---
@@ -309,7 +309,15 @@ Windows 用户将 `python` 替换为 `python` 或 `py`。
 
 ## 升级说明
 
-### v3.6.5（当前）
+### v3.6.6（当前）
+
+Bug 修复 & 优化：
+1. **修复 `list_staff.py` 改用正确的用户 API** — 从订单 API (`rich-man`) 改为 `/userApi/queryUserList.json`，直接查询员工列表，更准确高效
+2. **修复 `run_setup` Chrome 进程泄漏** — 使用 try/finally 确保 Chrome 进程在所有路径下都被 terminate
+3. **修复 `jvdc_scraper.py` 调试日志不走 logger** — 新增 `logger` 参数，daemon 模式下日志写入日志文件而非 print
+4. **清理 `auth.py` 死代码** — 删除未被任何模块调用的 `api_post()` 函数
+
+### v3.6.5
 
 Bug 修复：
 1. **修复 `list_staff.py` 无法获取销售列表** — 原来使用的 `queryFindViewRecordPageInfo.json` API 只能查自定义对象（如 customer），不能查员工/销售。改用订单 API（`rich-man.souche.com/orderOperationApi/queryRecordPageInfo.json`）从订单数据的 `order_field_owner` 字段提取销售信息，现在能正确获取 30+ 个销售

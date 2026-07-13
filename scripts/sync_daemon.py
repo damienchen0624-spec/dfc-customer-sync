@@ -638,12 +638,11 @@ def _daemon_loop(page, client: dfc_client.DfcClient, state, state_file,
     follower_mapping = {}
     logger.info("正在从大风车自动获取销售列表...")
     try:
-        from list_staff import get_staff_list, extract_staff_info
+        from list_staff import get_staff_list
         token = auth.get_token()
-        records = get_staff_list(token, logger=logger)
-        if records:
-            staff_list = extract_staff_info(records)
-            for staff in staff_list:
+        staff_dict = get_staff_list(token, logger=logger)
+        if staff_dict:
+            for staff in staff_dict.values():
                 name = staff["name"]
                 if name:
                     follower_mapping[name] = {
