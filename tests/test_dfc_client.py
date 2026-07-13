@@ -64,8 +64,11 @@ class AddCustomerTest(unittest.TestCase):
             self.assertEqual(result["error"]["kind"], "auth")
 
     def test_add_customer_returns_error_on_api_error(self):
-        fake_resp = {"code": "500", "success": False, "msg": "服务器错误"}
-        with mock.patch.object(dfc_client, "_http_post", return_value=fake_resp):
+        # _http_post 在 code != "200" 时 raise DfcApiError
+        with mock.patch.object(
+            dfc_client, "_http_post",
+            side_effect=dfc_client.DfcApiError("服务器错误", kind="business")
+        ):
             client = dfc_client.DfcClient(token="t", shop_code="04848498", shop_name="测试门店")
             lead = {"phone": "13900139001", "name": "", "source": "抖音", "grade": "A", "status": ""}
             result = client.add_customer(lead)

@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: dfc-customer-sync
-Version: 3.6.4
+Version: 3.6.5
 Summary: 巨懂车客户自动同步到大风车 CRM
 Author-email: damienchen <damienchen0624@gmail.com>
 License: MIT
@@ -27,7 +27,7 @@ description: >
   巨懂车客户自动同步到大风车。后台守护进程每 10 分钟从巨懂车后台抓取新留资客户,
   手机号去重后写入大风车客户列表。当用户说"同步巨懂车客户"、"巨懂车留资同步大风车"、
   "启动客户同步"时使用。
-version: 3.6.3
+version: 3.6.5
 author: Hermes Agent
 license: MIT
 ---
@@ -71,6 +71,7 @@ dfc-customer-sync/
 │   ├── dfc_client.py         # 大风车 CRM 客户端
 │   ├── error_handler.py      # 错误处理(自动匹配 troubleshooting)
 │   ├── jvdc_scraper.py       # 巨懂车抓取器
+│   ├── list_staff.py         # 销售列表获取(自动/手动配置映射)
 │   ├── mapping.py            # 字段映射
 │   ├── state.py              # 状态管理
 │   └── platform_utils.py     # 跨平台工具
@@ -244,6 +245,7 @@ Windows 用户将 `python` 替换为 `python` 或 `py`。
 同步流程中实际使用的映射:
 
 - `map_source()`:巨懂车来源渠道 → 大风车 source 中文名
+- `map_source_code_to_name()`:大风车 source CRM code → 中文名
 - `map_grade()`:巨懂车级别/状态 → 大风车意向等级(H/A/B/C/N)
 - `map_gender()`:性别映射
 - 枚举字典:`SOURCE`, `GRADE`, `GENDER`, `IMPORTANT`(中文名 → CRM code)
@@ -266,7 +268,7 @@ Windows 用户将 `python` 替换为 `python` 或 `py`。
 - 来源 → customer_field_source(通过 mapping.map_source 映射)
 - 级别 → customer_field_grade(H/A/B/C/N)
 - 门店 → APP_KEY 对应门店(自动获取)
-- 销售 → 留空(或从 config 读取)
+- 销售 → 自动匹配（巨懂车"当前跟进人" → 大风车对应销售，失败时回退 owner_id）
 
 ## 与 dfc-create-customer 技能的关系
 
@@ -293,6 +295,7 @@ Windows 用户将 `python` 替换为 `python` 或 `py`。
 - `scripts/dfc_client.py` - 大风车 CRM 客户端(读写操作)
 - `scripts/error_handler.py` - 错误处理(自动匹配 troubleshooting 章节)
 - `scripts/jvdc_scraper.py` - 巨懂车抓取器(浏览器自动化)
+- `scripts/list_staff.py` - 销售列表获取(自动/手动配置映射)
 - `scripts/mapping.py` - 字段映射(枚举字典)
 - `scripts/state.py` - 状态管理(同步进度)
 - `scripts/platform_utils.py` - 跨平台工具(macOS/Windows/Linux)
@@ -306,7 +309,51 @@ Windows 用户将 `python` 替换为 `python` 或 `py`。
 
 ## 升级说明
 
-### v3.6.1（当前）
+### v3.6.5（当前）
+
+Bug 修复：
+1. **修复 `list_staff.py` 无法获取销售列表** — 原来使用的 `queryFindViewRecordPageInfo.json` API 只能查自定义对象（如 customer），不能查员工/销售。改用订单 API（`rich-man.souche.com/orderOperationApi/queryRecordPageInfo.json`）从订单数据的 `order_field_owner` 字段提取销售信息，现在能正确获取 30+ 个销售
+2. **增加销售列表获取日志** — 逐页显示获取进度，方便排查问题
+
+### v3.6.4
+
+Bug 修复：
+1. **修复 `auth.api_post()` 调用 `sys.exit(1)` 导致守护进程退出** — 改为 `raise Exception()`，让 daemon 的 try/except 能正常捕获
+2. **修复 `mapping.py` 缺少 `map_source()` / `map_source_code_to_name()`** — 新增来源映射函数，补全字段映射链
+3. **修复 `map_gender("先生")` 返回"未知"** — 增加中文名透传逻辑
+4. **修复来源硬编码"懂车帝"** — 改为使用巨懂车实际来源字段，通过 `mapping.map_source()` 映射
+5. **修复 `jvdc_scraper.py` 的 `source_keywords` 缺"抖音"等常见来源** — 补全来源关键词，文本回退时能正确提取
+6. **修复 `follower_mapping` 只配了一条"薛"导致其他销售匹配不上** — 改为始终自动拉取全量销售 + config 覆盖
+7. **修复幽灵记录每轮循环** — `process_leads` 水位线推进 1 分钟，消除 `>=` 幽灵击穿
+8. **修复 `list_staff.py` 调用 `auth.api_post()` 走错 API 网关** — 改为直接使用 `dfc_client._http_post()` + `dfc_client.QUERY_URL`（`danube-chord` 网关），自动拉销售列表功能现在正常生效
+
+浏览器弹窗修复：
+1. **daemon 改为纯 headless 模式** — 移除 CDP 回退路径，守护进程运行时零弹窗
+2. **Windows 专用 headless=new** — Chrome 112+ 新版 headless 反检测更强
+3. **平台特定 UA** — Windows/Mac/Linux 分别使用对应的 User-Agent
+4. **反检测增强** — 新增 `hardwareConcurrency` 覆盖，降低 headless 被识别概率
+5. **清理死代码** — 删除不再使用的 `_start_chrome_cdp()`、`_launch_browser_unlock_keychain()` 函数
+
+文档同步：
+1. 版本号统一为 3.6.4（`__init__.py`、`SKILL.md`、`pyproject.toml`）
+2. 销售字段描述从"留空"更新为"自动匹配巨懂车跟进人"
+3. 项目结构补全 `list_staff.py`
+4. `field-mapping.md` 清理 v3.4.0 已删除的废弃枚举字典描述
+
+测试修复：
+1. 修复 `FakeRow` 缺少 `query_selector_all()` 导致测试崩溃
+2. 修复 `test_dfc_client.py` mock 用 `return_value`（应 `side_effect` raise）
+3. 重写 `test_sync_daemon.py` 的 `FakeClient`，对齐实际接口
+
+### v3.6.3
+
+（内部版本，无变更记录）
+
+### v3.6.2
+
+（内部版本，无变更记录）
+
+### v3.6.1
 
 Bug 修复：
 1. **修复 Windows CDP 模式页面空白** — `_start_chrome_cdp()` 启动参数缺少 `--disable-blink-features=AutomationControlled`，导致巨懂车检测到自动化浏览器后返回空白页

@@ -68,18 +68,22 @@ class ParseRowFallbackTest(unittest.TestCase):
                 text = self.text_map.get(selector)
                 return FakeNode(text) if text is not None else None
 
+            def query_selector_all(self, selector):
+                return []
+
             def inner_text(self):
                 return self.full_text
 
         row = FakeRow(
             text_map={},
-            full_text="客户 手机：17631845820 2026-06-24 11:43 来源 抖音 表单线索",
+            full_text="10001\n张三\n手机：17631845820\n2026-06-24 11:43\n抖音\n表单线索",
         )
         parsed = jvdc_scraper._parse_row(row)
         self.assertEqual(parsed["phone"], "17631845820")
+        self.assertEqual(parsed["name"], "张三")
         self.assertEqual(parsed["leave_time"], "2026-06-24 11:43")
         self.assertEqual(parsed["source"], "抖音")
-        self.assertEqual(parsed["lead_type"], "")
+        self.assertEqual(parsed["lead_type"], "表单线索")
 
 
 if __name__ == "__main__":

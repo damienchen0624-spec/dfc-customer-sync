@@ -443,53 +443,53 @@ def run_setup(config):
             "--window-size=1280,800",
         ])
         
+        # 等待浏览器启动
+        print("   ⏳ 等待浏览器启动...")
+        time.sleep(3)
+        
         try:
-            # 等待浏览器启动
-            print("   ⏳ 等待浏览器启动...")
-            time.sleep(3)
-            
             # Playwright 通过 CDP 连接
             browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=60000)
-            print(f"\n🌐 登录页已加载: {page.url}")
-            print("👉 请在浏览器中完成登录操作")
-            print("⏳ 等待登录完成（最多 5 分钟）...")
-            deadline = time.time() + 300
-            while time.time() < deadline:
-                time.sleep(3)
-                current_url = page.url or ""
-                if "login" not in current_url:
-                    try:
-                        _navigate_reliable(page, config["jvdc"]["list_url"], timeout_ms=30000)
-                        if "login" not in page.url:
-                            ctx.storage_state(path=storage_path)
-                            page.goto("about:blank", wait_until="domcontentloaded", timeout=10000)
-                            time.sleep(2)
-                            print("\n✅ 登录成功！登录态已保存")
-                            print(f"✅ Cookie 已写入 profile: {user_data_dir}")
-                            print(f"✅ storage_state 备份: {storage_path}")
-                            print("\n🎉 Setup 完成！你可以关闭浏览器窗口了。")
-                            print("💡 现在可以运行 `python scripts/sync_daemon.py` 启动同步守护进程")
-                            return
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        body_len = page.evaluate("document.body ? document.body.innerText.length : 0")
-                        if body_len < 50:
-                            print("⚠️ 登录页空白，重新加载...")
-                            _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=30000)
-                    except Exception:
-                        pass
-            print("\n❌ 登录超时（5分钟），请重试")
         except Exception as e:
-            print(f"   ❌ 浏览器操作失败: {e}")
-        finally:
-            # 确保 Chrome 进程被清理
+            print(f"   ❌ 连接浏览器失败: {e}")
             chrome_proc.terminate()
+            return
+        
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=60000)
+        print(f"\n🌐 登录页已加载: {page.url}")
+        print("👉 请在浏览器中完成登录操作")
+        print("⏳ 等待登录完成（最多 5 分钟）...")
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            time.sleep(3)
+            current_url = page.url or ""
+            if "login" not in current_url:
+                try:
+                    _navigate_reliable(page, config["jvdc"]["list_url"], timeout_ms=30000)
+                    if "login" not in page.url:
+                        ctx.storage_state(path=storage_path)
+                        page.goto("about:blank", wait_until="domcontentloaded", timeout=10000)
+                        time.sleep(2)
+                        print("\n✅ 登录成功！登录态已保存")
+                        print(f"✅ Cookie 已写入 profile: {user_data_dir}")
+                        print(f"✅ storage_state 备份: {storage_path}")
+                        print("\n🎉 Setup 完成！你可以关闭浏览器窗口了。")
+                        print("💡 现在可以运行 `python scripts/sync_daemon.py` 启动同步守护进程")
+                        return
+                except Exception:
+                    pass
+            else:
+                try:
+                    body_len = page.evaluate("document.body ? document.body.innerText.length : 0")
+                    if body_len < 50:
+                        print("⚠️ 登录页空白，重新加载...")
+                        _navigate_reliable(page, config["jvdc"]["login_url"], timeout_ms=30000)
+                except Exception:
+                    pass
+        print("\n❌ 登录超时（5分钟），请重试")
+        chrome_proc.terminate()
 
 
 # ============================================================
@@ -677,7 +677,6 @@ def _daemon_loop(page, client: dfc_client.DfcClient, state, state_file,
             leads = jvdc_scraper.fetch_new_leads(
                 page, config["jvdc"]["list_url"],
                 since=state["last_sync_time"], allowed_types=allowed_types,
-                logger=logger,
             )
             logger.info(f"抓取到 {len(leads)} 条新客户记录")
             result = process_leads(leads, client, state, follower_mapping=follower_mapping)

@@ -16,7 +16,7 @@
 | 大风车 code | 值 | 来源 |
 |------------|-----|------|
 | customer_field_shop_code | APP_KEY 门店 | auth.get_account_info |
-| customer_field_owner | 配置中的 owner_id | config.json |
+| customer_field_owner | 自动匹配（巨懂车跟进人 → 大风车销售，失败回退 owner_id） | sync_daemon 启动时自动映射 |
 | customer_field_gender | 未知 | 默认（或从巨懂车映射） |
 | customer_field_is_important | 否 | 默认 |
 | customer_field_create_type | PC-主动创建 | 必填，固定值 |
@@ -46,14 +46,6 @@
 - `GRADE`：意向等级（H/A/B/C/N → CRM code）
 - `GENDER`：性别（先生/女士/未知 → CRM code）
 - `IMPORTANT`：重点客户（是/否 → CRM code）
-- `MODE`：沟通方式（到店/电话/短信/微信 → CRM code）
-- `CONCERN`：关注点（多选）
-- `CAR_STRUCTURE`：车体形式（多选）
-- `CAR_AGE`：车龄
-- `FENQI`：分期购车
-- `SELL_CAR`：是否卖车
-- `IS_INVITE`：是否邀约
-- `INVITE_RESULT`：邀约结果
 
 ## 认证架构
 

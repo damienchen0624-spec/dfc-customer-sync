@@ -145,6 +145,37 @@ def build_headers(dfc_token: str, extra: Optional[dict] = None) -> dict:
     return headers
 
 
+def api_post(endpoint: str, payload: dict, dfc_token: str, extra_headers: Optional[dict] = None, silent: bool = False) -> dict:
+    """
+    发起 POST 请求
+    """
+    url = f"{API_BASE}{endpoint}"
+    headers = build_headers(dfc_token, extra_headers)
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=_ssl_context()) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if not silent:
+            print(f"HTTP 错误 {e.code}: {e.reason}", file=sys.stderr)
+        raise Exception(f"API POST HTTP 错误 {e.code}: {e.reason}")
+    except urllib.error.URLError as e:
+        if not silent:
+            print(f"网络错误: {e.reason}", file=sys.stderr)
+        raise Exception(f"API POST 网络错误: {e.reason}")
+
+    if result.get("code") != "200":
+        msg = result.get('msg', '未知错误')
+        if not silent:
+            print(f"API 业务错误: {msg}", file=sys.stderr)
+        raise Exception(f"API POST 业务错误: {msg}")
+
+    return result.get("data", {})
+
+
 def get_servicechain() -> str:
     """获取服务链标识"""
     return os.getenv("SOUCHE_SERVICECHAIN", "env-1025647")

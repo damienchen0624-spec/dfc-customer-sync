@@ -35,14 +35,8 @@ def filter_lead_types(rows: List[Dict], allowed: List[str]) -> List[Dict]:
 
 # ---- Playwright 集成部分 ----
 
-def fetch_new_leads(page, list_url: str, since: Optional[str], allowed_types: List[str], logger=None) -> List[Dict]:
+def fetch_new_leads(page, list_url: str, since: Optional[str], allowed_types: List[str]) -> List[Dict]:
     """打开巨懂车客户列表，抓取并解析比 since 新的留资记录。"""
-    def _log(msg):
-        if logger:
-            logger.info(msg)
-        else:
-            print(f"   [DEBUG] {msg}")
-
     # 导航
     current_url = page.url or ""
     if current_url == list_url or current_url.startswith(list_url + "?") or current_url.startswith(list_url + "#"):
@@ -61,41 +55,41 @@ def fetch_new_leads(page, list_url: str, since: Optional[str], allowed_types: Li
         raise BrowserLoginExpired("巨懂车登录态过期（URL 含 login）")
 
     # 等待表格（增加等待时间和调试信息）
-    _log(f"等待表格数据加载... (URL: {page.url})")
+    print(f"   [DEBUG] 等待表格数据加载... (URL: {page.url})")
     
     # 先等待 Arco Design 表格容器（SPA 渲染标志）
     try:
         page.wait_for_selector(".arco-table", timeout=30000)
-        _log("Arco 表格容器已加载")
+        print("   [DEBUG] Arco 表格容器已加载")
     except Exception as e:
-        _log(f"等待 Arco 表格容器超时: {e}")
+        print(f"   [DEBUG] 等待 Arco 表格容器超时: {e}")
         # 使用跨平台的调试路径
         import platform_utils
         debug_path = str(platform_utils.get_app_data_dir() / "dfc-customer-sync" / "debug_daemon.html")
         Path(debug_path).parent.mkdir(parents=True, exist_ok=True)
         with open(debug_path, "w", encoding="utf-8") as f:
             f.write(page.content())
-        _log(f"页面已保存到: {debug_path}")
+        print(f"   [DEBUG] 页面已保存到: {debug_path}")
 
     # ★ 关键：等待加载中的 spinner 消失（数据加载完成标志）
     try:
         page.wait_for_selector(".arco-spin-loading-layer", state="hidden", timeout=30000)
-        _log("数据加载完成（spinner 已消失）")
+        print("   [DEBUG] 数据加载完成（spinner 已消失）")
     except Exception as e:
-        _log(f"等待 spinner 消失超时: {e}")
+        print(f"   [DEBUG] 等待 spinner 消失超时: {e}")
 
     # 额外等待确保 DOM 更新
     page.wait_for_timeout(2000)
 
     # 检查是否有数据行（排除空行）
     rows_check = page.query_selector_all("table tbody tr:not(.arco-table-empty-row)")
-    _log(f"找到 {len(rows_check)} 行数据（排除空行）")
+    print(f"   [DEBUG] 找到 {len(rows_check)} 行数据（排除空行）")
     
     if len(rows_check) == 0:
         # 检查是否是空状态
         empty_check = page.query_selector(".arco-table-empty-row")
         if empty_check:
-            _log("表格显示'暂无内容'，当前视图无数据")
+            print("   [DEBUG] 表格显示'暂无内容'，当前视图无数据")
             # 尝试切换到"全部客户"标签
             try:
                 all_customers_tab = page.query_selector("text=全部客户")
@@ -109,9 +103,9 @@ def fetch_new_leads(page, list_url: str, since: Optional[str], allowed_types: Li
                         pass
                     page.wait_for_timeout(2000)
                     rows_check = page.query_selector_all("table tbody tr:not(.arco-table-empty-row)")
-                    _log(f"切换到'全部客户'后找到 {len(rows_check)} 行数据")
+                    print(f"   [DEBUG] 切换到'全部客户'后找到 {len(rows_check)} 行数据")
             except Exception as e:
-                _log(f"切换标签失败: {e}")
+                print(f"   [DEBUG] 切换标签失败: {e}")
     has_phone = False
     for r in rows_check[:5]:
         text = r.inner_text() or ""

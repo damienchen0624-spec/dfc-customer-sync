@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """获取大风车门店下的销售列表，用于配置 follower_mapping。
 
-通过用户 API 获取门店下所有销售/员工信息。
+通过订单 API 提取所有销售信息（因为直接查询 scdo_user 返回 500）。
 """
 
 import json
@@ -16,12 +16,12 @@ import auth
 import dfc_client
 
 
-# 用户查询 API
-USER_LIST_URL = f"{auth.API_BASE}/userApi/queryUserList.json"
+# 订单查询 API（rich-man 网关）
+ORDER_URL = "https://rich-man.souche.com/orderOperationApi/queryRecordPageInfo.json"
 
 
 def get_staff_list(token: str, max_pages: int = 10, logger=None) -> dict:
-    """从用户 API 获取门店下所有销售信息。
+    """从订单数据中提取所有销售信息。
     
     Args:
         token: 大风车 Token
@@ -31,49 +31,48 @@ def get_staff_list(token: str, max_pages: int = 10, logger=None) -> dict:
     Returns:
         {recordId: {"name": "姓名", "recordId": "xxx", "recordDisplay": "姓名"}}
     """
-    all_staff = {}
+    all_owners = {}
     
     for page in range(1, max_pages + 1):
         payload = {
             "pageNo": page,
             "pageSize": 50,
+            "viewCode": "order_view_list",
+            "objCode": "order",
+            "filters": []
         }
         try:
-            result = dfc_client._http_post(USER_LIST_URL, payload, token)
-            data = result.get("data", {})
-            # 兼容多种响应格式
-            records = data.get("items") or data.get("records") or data.get("list") or []
+            result = dfc_client._http_post(ORDER_URL, payload, token)
+            records = result.get("data", {}).get("common", {}).get("records", [])
             if not records:
                 if logger:
                     logger.info(f"第{page}页无数据，停止查询")
                 break
             
-            page_new = 0
+            page_owners = 0
             for rec in records:
-                # 兼容多种字段命名
-                staff_id = rec.get("recordId") or rec.get("userId") or rec.get("id", "")
-                staff_name = rec.get("name") or rec.get("realName") or rec.get("userName") or rec.get("displayName", "")
-                if staff_id and staff_name:
-                    if staff_id not in all_staff:
-                        page_new += 1
-                    all_staff[staff_id] = {
-                        "name": staff_name,
-                        "recordId": str(staff_id),
-                        "recordDisplay": staff_name
-                    }
+                fields = rec.get("fields", [])
+                for f in fields:
+                    if f.get("code") == "order_field_owner":
+                        owner_id = f.get("recordId", "")
+                        owner_name = f.get("displayValue", "")
+                        if owner_id and owner_name:
+                            if owner_id not in all_owners:
+                                page_owners += 1
+                            all_owners[owner_id] = {
+                                "name": owner_name,
+                                "recordId": owner_id,
+                                "recordDisplay": owner_name
+                            }
             
             if logger:
-                logger.info(f"第{page}页: {len(records)} 条记录, 新增 {page_new} 个销售, 累计 {len(all_staff)} 个")
-            
-            # 如果返回数量少于 pageSize，说明已到最后一页
-            if len(records) < 50:
-                break
+                logger.info(f"第{page}页: {len(records)} 条订单, 新增 {page_owners} 个销售, 累计 {len(all_owners)} 个")
         except Exception as e:
             if logger:
                 logger.warning(f"第{page}页查询失败: {e}")
             break
     
-    return all_staff
+    return all_owners
 
 
 def extract_staff_info(staff_dict: dict) -> list:
@@ -83,7 +82,7 @@ def extract_staff_info(staff_dict: dict) -> list:
 
 def main():
     print("=== 获取大风车销售列表 ===\n")
-    print("（通过用户 API 获取销售信息）\n")
+    print("（通过订单 API 提取销售信息）\n")
     
     try:
         token = auth.get_token()
